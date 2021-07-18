@@ -2,8 +2,10 @@
 package jwt
 
 import (
+	"fmt"
+
 	"github.com/ant0ine/go-json-rest/rest"
-	"github.com/dgrijalva/jwt-go"
+	"github.com/golang-jwt/jwt"
 
 	"errors"
 	"log"
@@ -53,6 +55,10 @@ type JWTMiddleware struct {
 	// The attributes mentioned on jwt.io can't be used as keys for the map.
 	// Optional, by default no additional data will be set.
 	PayloadFunc func(userId string) map[string]interface{}
+
+	// Debug adds a bit of debug when the middleware rejects request with unauthorized
+	// Only use while developing as it leaks details that can potentially be abused by an attacker
+	Debug bool
 }
 
 // MiddlewareFunc makes JWTMiddleware implement the Middleware interface.
@@ -86,24 +92,27 @@ func (mw *JWTMiddleware) middlewareImpl(writer rest.ResponseWriter, request *res
 	token, err := mw.parseToken(request)
 
 	if err != nil {
-		mw.unauthorized(writer)
+		mw.unauthorized(writer, "parseToken fail: "+err.Error())
 		return
 	}
 
-	idInterface := token.Claims["id"]
-
-	if idInterface == nil {
-		mw.unauthorized(writer)
+	claims, ok := token.Claims.(*RestClaims)
+	if !ok {
+		mw.unauthorized(writer, fmt.Sprintf("Claim could not be cast from: %T\n%+v", token.Claims, token.Claims))
 		return
 	}
 
-	id := idInterface.(string)
+	subject := claims.Subject
+	if subject == "" {
+		mw.unauthorized(writer, "Subject empty")
+		return
+	}
 
-	request.Env["REMOTE_USER"] = id
-	request.Env["JWT_PAYLOAD"] = token.Claims
+	request.Env["REMOTE_USER"] = subject
+	request.Env["JWT_PAYLOAD"] = claims
 
-	if !mw.Authorizator(id, request) {
-		mw.unauthorized(writer)
+	if !mw.Authorizator(subject, request) {
+		mw.unauthorized(writer, "Authorizer rejected request")
 		return
 	}
 
@@ -111,12 +120,11 @@ func (mw *JWTMiddleware) middlewareImpl(writer rest.ResponseWriter, request *res
 }
 
 // ExtractClaims allows to retrieve the payload
-func ExtractClaims(request *rest.Request) map[string]interface{} {
+func ExtractClaims(request *rest.Request) *RestClaims {
 	if request.Env["JWT_PAYLOAD"] == nil {
-		emptyClaims := make(map[string]interface{})
-		return emptyClaims
+		return nil
 	}
-	jwtClaims := request.Env["JWT_PAYLOAD"].(map[string]interface{})
+	jwtClaims := request.Env["JWT_PAYLOAD"].(*RestClaims)
 	return jwtClaims
 }
 
@@ -129,6 +137,19 @@ type login struct {
 	Password string `json:"password"`
 }
 
+type RestClaims struct {
+	jwt.StandardClaims
+	Payload          map[string]interface{} `json:"payload,omitempty"`
+	OriginalIssuedAt int64                  `json:"orig_iat"`
+}
+
+func (rc RestClaims) Valid() error {
+	if err := rc.StandardClaims.Valid(); err != nil {
+		return err
+	}
+	return nil
+}
+
 // LoginHandler can be used by clients to get a jwt token.
 // Payload needs to be json in the form of {"username": "USERNAME", "password": "PASSWORD"}.
 // Reply will be of the form {"token": "TOKEN"}.
@@ -137,32 +158,43 @@ func (mw *JWTMiddleware) LoginHandler(writer rest.ResponseWriter, request *rest.
 	err := request.DecodeJsonPayload(&loginVals)
 
 	if err != nil {
-		mw.unauthorized(writer)
+		mw.unauthorized(writer, "Could not decode login values")
 		return
 	}
 
 	if !mw.Authenticator(loginVals.Username, loginVals.Password) {
-		mw.unauthorized(writer)
+		mw.unauthorized(writer, "Authentication failed")
 		return
 	}
 
-	token := jwt.New(jwt.GetSigningMethod(mw.SigningAlgorithm))
+	// Build the claims
+	now := time.Now()
+	claims := RestClaims{
+		StandardClaims: jwt.StandardClaims{
+			Subject:   loginVals.Username,
+			IssuedAt:  now.Unix(),
+			NotBefore: now.Unix(),
+			ExpiresAt: now.Add(mw.Timeout).Unix(),
+		},
+	}
 
 	if mw.PayloadFunc != nil {
+		claims.Payload = make(map[string]interface{})
 		for key, value := range mw.PayloadFunc(loginVals.Username) {
-			token.Claims[key] = value
+			claims.Payload[key] = value
 		}
 	}
 
-	token.Claims["id"] = loginVals.Username
-	token.Claims["exp"] = time.Now().Add(mw.Timeout).Unix()
 	if mw.MaxRefresh != 0 {
-		token.Claims["orig_iat"] = time.Now().Unix()
+		claims.OriginalIssuedAt = time.Now().Unix()
 	}
+
+	token := jwt.NewWithClaims(jwt.GetSigningMethod(mw.SigningAlgorithm), claims)
+
 	tokenString, err := token.SignedString(mw.Key)
 
 	if err != nil {
-		mw.unauthorized(writer)
+		mw.unauthorized(writer, fmt.Sprintf("Could not sign: %v", err))
 		return
 	}
 
@@ -181,12 +213,15 @@ func (mw *JWTMiddleware) parseToken(request *rest.Request) (*jwt.Token, error) {
 		return nil, errors.New("Invalid auth header")
 	}
 
-	return jwt.Parse(parts[1], func(token *jwt.Token) (interface{}, error) {
-		if jwt.GetSigningMethod(mw.SigningAlgorithm) != token.Method {
-			return nil, errors.New("Invalid signing algorithm")
-		}
-		return mw.Key, nil
-	})
+	return jwt.ParseWithClaims(
+		parts[1],
+		&RestClaims{},
+		func(token *jwt.Token) (interface{}, error) {
+			if jwt.GetSigningMethod(mw.SigningAlgorithm) != token.Method {
+				return nil, errors.New("Invalid signing algorithm")
+			}
+			return mw.Key, nil
+		})
 }
 
 // RefreshHandler can be used to refresh a token. The token still needs to be valid on refresh.
@@ -197,37 +232,36 @@ func (mw *JWTMiddleware) RefreshHandler(writer rest.ResponseWriter, request *res
 
 	// Token should be valid anyway as the RefreshHandler is authed
 	if err != nil {
-		mw.unauthorized(writer)
+		mw.unauthorized(writer, "JWT not valid, not allowing refresh")
 		return
 	}
 
-	origIat := int64(token.Claims["orig_iat"].(float64))
-
+	claims, ok := token.Claims.(*RestClaims)
+	if !ok {
+		mw.unauthorized(writer, fmt.Sprintf("Claims of unexpected type: %T", token.Claims))
+		return
+	}
+	origIat := claims.OriginalIssuedAt
 	if origIat < time.Now().Add(-mw.MaxRefresh).Unix() {
-		mw.unauthorized(writer)
+		mw.unauthorized(writer, "Max refresh exceeded")
 		return
 	}
 
-	newToken := jwt.New(jwt.GetSigningMethod(mw.SigningAlgorithm))
-
-	for key := range token.Claims {
-		newToken.Claims[key] = token.Claims[key]
-	}
-
-	newToken.Claims["id"] = token.Claims["id"]
-	newToken.Claims["exp"] = time.Now().Add(mw.Timeout).Unix()
-	newToken.Claims["orig_iat"] = origIat
+	// Update expiration time but leave all else as-is
+	claims.ExpiresAt = time.Now().Add(mw.Timeout).Unix()
+	newToken := jwt.NewWithClaims(jwt.GetSigningMethod(mw.SigningAlgorithm), claims)
 	tokenString, err := newToken.SignedString(mw.Key)
-
 	if err != nil {
-		mw.unauthorized(writer)
+		mw.unauthorized(writer, "Unable to sign token")
 		return
 	}
-
 	writer.WriteJson(resultToken{Token: tokenString})
 }
 
-func (mw *JWTMiddleware) unauthorized(writer rest.ResponseWriter) {
+func (mw *JWTMiddleware) unauthorized(writer rest.ResponseWriter, debugReason string) {
 	writer.Header().Set("WWW-Authenticate", "JWT realm="+mw.Realm)
+	if mw.Debug {
+		writer.Header().Set("X-Unauthorized-Reason", fmt.Sprintf(debugReason))
+	}
 	rest.Error(writer, "Not Authorized", http.StatusUnauthorized)
 }

@@ -1,12 +1,13 @@
 package jwt
 
 import (
+	"log"
 	"testing"
 	"time"
 
 	"github.com/ant0ine/go-json-rest/rest"
 	"github.com/ant0ine/go-json-rest/rest/test"
-	"github.com/dgrijalva/jwt-go"
+	"github.com/golang-jwt/jwt"
 )
 
 var (
@@ -15,21 +16,38 @@ var (
 
 type DecoderToken struct {
 	Token string `json:"token"`
+	Error string `json:"Error"`
+}
+
+func makeClaims(username string) RestClaims {
+	now := time.Now()
+	claims := RestClaims{
+		StandardClaims: jwt.StandardClaims{
+			Subject:   username,
+			IssuedAt:  now.Unix(),
+			ExpiresAt: now.Add(time.Hour).Unix(),
+		},
+		OriginalIssuedAt: now.Unix(),
+		Payload:          make(map[string]interface{}),
+	}
+	return claims
 }
 
 func makeTokenString(username string, key []byte) string {
-	token := jwt.New(jwt.GetSigningMethod("HS256"))
-	token.Claims["id"] = username
-	token.Claims["exp"] = time.Now().Add(time.Hour).Unix()
-	token.Claims["orig_iat"] = time.Now().Unix()
-	tokenString, _ := token.SignedString(key)
+	claims := makeClaims(username)
+	token := jwt.NewWithClaims(jwt.GetSigningMethod("HS256"), claims)
+	tokenString, err := token.SignedString(key)
+	if err != nil {
+		log.Println(err)
+		return ""
+	}
+
 	return tokenString
 }
 
-func TestAuthJWT(t *testing.T) {
-
-	// the middleware to test
-	authMiddleware := &JWTMiddleware{
+// the middleware to test
+func makeAthMiddleware() *JWTMiddleware {
+	return &JWTMiddleware{
 		Realm:      "test zone",
 		Key:        key,
 		Timeout:    time.Hour,
@@ -47,85 +65,91 @@ func TestAuthJWT(t *testing.T) {
 			return false
 		},
 	}
+}
+
+func TestAuthJWT(t *testing.T) {
+
+	authMiddleware := makeAthMiddleware()
 
 	// api for testing failure
 	apiFailure := rest.NewApi()
 	apiFailure.Use(authMiddleware)
 	apiFailure.SetApp(rest.AppSimple(func(w rest.ResponseWriter, r *rest.Request) {
+		t.Logf("URL requested: %v", r.URL.Path)
 		t.Error("Should never be executed")
 	}))
 	handler := apiFailure.MakeHandler()
 
 	// simple request fails
-	recorded := test.RunRequest(t, handler, test.MakeSimpleRequest("GET", "http://localhost/", nil))
+	recorded := test.RunRequest(t, handler, test.MakeSimpleRequest("GET", "http://localhost/simple request fails", nil))
 	recorded.CodeIs(401)
 	recorded.ContentTypeIsJson()
 
 	// auth with right cred and wrong method fails
-	wrongMethodReq := test.MakeSimpleRequest("POST", "http://localhost/", nil)
+	wrongMethodReq := test.MakeSimpleRequest("POST", "http://localhost/auth with right cred and wrong method fails", nil)
 	wrongMethodReq.Header.Set("Authorization", "Bearer "+makeTokenString("admin", key))
 	recorded = test.RunRequest(t, handler, wrongMethodReq)
 	recorded.CodeIs(401)
 	recorded.ContentTypeIsJson()
 
 	// wrong Auth format - bearer lower case
-	wrongAuthFormat := test.MakeSimpleRequest("GET", "http://localhost/", nil)
+	wrongAuthFormat := test.MakeSimpleRequest("GET", "http://localhost/wrong Auth format - bearer lower case", nil)
 	wrongAuthFormat.Header.Set("Authorization", "bearer "+makeTokenString("admin", key))
 	recorded = test.RunRequest(t, handler, wrongAuthFormat)
 	recorded.CodeIs(401)
 	recorded.ContentTypeIsJson()
 
 	// wrong Auth format - no space after bearer
-	wrongAuthFormat = test.MakeSimpleRequest("GET", "http://localhost/", nil)
+	wrongAuthFormat = test.MakeSimpleRequest("GET", "http://localhost/wrong Auth format - no space after bearer", nil)
 	wrongAuthFormat.Header.Set("Authorization", "bearer"+makeTokenString("admin", key))
 	recorded = test.RunRequest(t, handler, wrongAuthFormat)
 	recorded.CodeIs(401)
 	recorded.ContentTypeIsJson()
 
 	// wrong Auth format - empty auth header
-	wrongAuthFormat = test.MakeSimpleRequest("GET", "http://localhost/", nil)
+	wrongAuthFormat = test.MakeSimpleRequest("GET", "http://localhost/wrong Auth format - empty auth header", nil)
 	wrongAuthFormat.Header.Set("Authorization", "")
 	recorded = test.RunRequest(t, handler, wrongAuthFormat)
 	recorded.CodeIs(401)
 	recorded.ContentTypeIsJson()
 
 	// right credt, right method but wrong priv key
-	wrongPrivKeyReq := test.MakeSimpleRequest("GET", "http://localhost/", nil)
+	wrongPrivKeyReq := test.MakeSimpleRequest("GET", "http://localhost/right credt, right method but wrong priv key", nil)
 	wrongPrivKeyReq.Header.Set("Authorization", "Bearer "+makeTokenString("admin", []byte("sekret key")))
 	recorded = test.RunRequest(t, handler, wrongPrivKeyReq)
 	recorded.CodeIs(401)
 	recorded.ContentTypeIsJson()
 
 	// right credt, right method, right priv key but timeout
-	token := jwt.New(jwt.GetSigningMethod("HS256"))
-	token.Claims["id"] = "admin"
-	token.Claims["exp"] = 0
+	claims := makeClaims("admin")
+	claims.ExpiresAt = 1 // If zero it will be valid as "assumed not set"
+	token := jwt.NewWithClaims(jwt.GetSigningMethod("HS256"), claims)
+
 	tokenString, _ := token.SignedString(key)
 
-	expiredTimestampReq := test.MakeSimpleRequest("GET", "http://localhost/", nil)
+	expiredTimestampReq := test.MakeSimpleRequest("GET", "http://localhost/right credt, right method, right priv key but timeout", nil)
 	expiredTimestampReq.Header.Set("Authorization", "Bearer "+tokenString)
 	recorded = test.RunRequest(t, handler, expiredTimestampReq)
 	recorded.CodeIs(401)
 	recorded.ContentTypeIsJson()
 
 	// right credt, right method, right priv key but no id
-	tokenNoId := jwt.New(jwt.GetSigningMethod("HS256"))
-	tokenNoId.Claims["exp"] = time.Now().Add(time.Hour).Unix()
+	claimsNoID := makeClaims("")
+	tokenNoId := jwt.NewWithClaims(jwt.GetSigningMethod("HS256"), claimsNoID)
 	tokenNoIdString, _ := tokenNoId.SignedString(key)
 
-	noIDReq := test.MakeSimpleRequest("GET", "http://localhost/", nil)
+	noIDReq := test.MakeSimpleRequest("GET", "http://localhost/right credt, right method, right priv key but no id", nil)
 	noIDReq.Header.Set("Authorization", "Bearer "+tokenNoIdString)
 	recorded = test.RunRequest(t, handler, noIDReq)
 	recorded.CodeIs(401)
 	recorded.ContentTypeIsJson()
 
 	// right credt, right method, right priv, wrong signing method on request
-	tokenBadSigning := jwt.New(jwt.GetSigningMethod("HS384"))
-	tokenBadSigning.Claims["id"] = "admin"
-	tokenBadSigning.Claims["exp"] = time.Now().Add(time.Hour * 72).Unix()
+	claimsBadSigning := makeClaims("admin")
+	tokenBadSigning := jwt.NewWithClaims(jwt.GetSigningMethod("HS384"), claimsBadSigning)
 	tokenBadSigningString, _ := tokenBadSigning.SignedString(key)
 
-	BadSigningReq := test.MakeSimpleRequest("GET", "http://localhost/", nil)
+	BadSigningReq := test.MakeSimpleRequest("GET", "http://localhost/right credt, right method, right priv, wrong signing method on request", nil)
 	BadSigningReq.Header.Set("Authorization", "Bearer "+tokenBadSigningString)
 	recorded = test.RunRequest(t, handler, BadSigningReq)
 	recorded.CodeIs(401)
@@ -146,7 +170,7 @@ func TestAuthJWT(t *testing.T) {
 	}))
 
 	// auth with right cred and right method succeeds
-	validReq := test.MakeSimpleRequest("GET", "http://localhost/", nil)
+	validReq := test.MakeSimpleRequest("GET", "http://localhost/auth with right cred and right method succeeds", nil)
 	validReq.Header.Set("Authorization", "Bearer "+makeTokenString("admin", key))
 	recorded = test.RunRequest(t, apiSuccess.MakeHandler(), validReq)
 	recorded.CodeIs(200)
@@ -158,7 +182,7 @@ func TestAuthJWT(t *testing.T) {
 
 	// wrong login
 	wrongLoginCreds := map[string]string{"username": "admin", "password": "admIn"}
-	wrongLoginReq := test.MakeSimpleRequest("POST", "http://localhost/", wrongLoginCreds)
+	wrongLoginReq := test.MakeSimpleRequest("POST", "http://localhost/wrong login", wrongLoginCreds)
 	recorded = test.RunRequest(t, loginApi.MakeHandler(), wrongLoginReq)
 	recorded.CodeIs(401)
 	recorded.ContentTypeIsJson()
@@ -173,7 +197,7 @@ func TestAuthJWT(t *testing.T) {
 	// correct login
 	before := time.Now().Unix()
 	loginCreds := map[string]string{"username": "admin", "password": "admin"}
-	rightCredReq := test.MakeSimpleRequest("POST", "http://localhost/", loginCreds)
+	rightCredReq := test.MakeSimpleRequest("POST", "http://localhost/empty login", loginCreds)
 	recorded = test.RunRequest(t, loginApi.MakeHandler(), rightCredReq)
 	recorded.CodeIs(200)
 	recorded.ContentTypeIsJson()
@@ -185,60 +209,83 @@ func TestAuthJWT(t *testing.T) {
 	})
 
 	if err != nil {
-		t.Errorf("Received new token with wrong signature", err)
+		t.Errorf("Received new token with wrong signature: %v", err)
 	}
 
-	if newToken.Claims["id"].(string) != "admin" ||
-		int64(newToken.Claims["exp"].(float64)) < before {
+	claimsCorrectLogin := newToken.Claims.(jwt.MapClaims)
+
+	if claimsCorrectLogin["sub"] != "admin" ||
+		int64(claimsCorrectLogin["exp"].(float64)) < before {
 		t.Errorf("Received new token with wrong data")
 	}
+
+}
+
+func TestRefreshFail(t *testing.T) {
+
+	authMiddleware := makeAthMiddleware()
 
 	refreshApi := rest.NewApi()
 	refreshApi.Use(authMiddleware)
 	refreshApi.SetApp(rest.AppSimple(authMiddleware.RefreshHandler))
 
 	// refresh with expired max refresh
-	unrefreshableToken := jwt.New(jwt.GetSigningMethod("HS256"))
-	unrefreshableToken.Claims["id"] = "admin"
 	// the combination actually doesn't make sense but is ok for the test
-	unrefreshableToken.Claims["exp"] = time.Now().Add(time.Hour).Unix()
-	unrefreshableToken.Claims["orig_iat"] = 0
-	tokenString, _ = unrefreshableToken.SignedString(key)
+	claimsUnrefreshable := makeClaims("admin")
+	claimsUnrefreshable.OriginalIssuedAt = 0
+	unrefreshableToken := jwt.NewWithClaims(jwt.GetSigningMethod("HS256"), claimsUnrefreshable)
+	tokenString, _ := unrefreshableToken.SignedString(key)
 
-	unrefreshableReq := test.MakeSimpleRequest("GET", "http://localhost/", nil)
+	unrefreshableReq := test.MakeSimpleRequest("GET", "http://localhost/TestRefreshFail", nil)
 	unrefreshableReq.Header.Set("Authorization", "Bearer "+tokenString)
-	recorded = test.RunRequest(t, refreshApi.MakeHandler(), unrefreshableReq)
+	recorded := test.RunRequest(t, refreshApi.MakeHandler(), unrefreshableReq)
 	recorded.CodeIs(401)
 	recorded.ContentTypeIsJson()
+}
 
-	// valid refresh
-	refreshableToken := jwt.New(jwt.GetSigningMethod("HS256"))
-	refreshableToken.Claims["id"] = "admin"
+func TestRefreshSuccess(t *testing.T) {
+
+	authMiddleware := makeAthMiddleware()
+
+	refreshApi := rest.NewApi()
+	refreshApi.Use(authMiddleware)
+	refreshApi.SetApp(rest.AppSimple(authMiddleware.RefreshHandler))
+
+	claimsRefreshable := makeClaims("admin")
+	claimsRefreshable.ExpiresAt = time.Now().Add(time.Hour).Unix() - 1
+	claimsRefreshable.OriginalIssuedAt = time.Now().Unix() - 1
+
+	refreshableToken := jwt.NewWithClaims(jwt.GetSigningMethod("HS256"), claimsRefreshable)
 	// we need to substract one to test the case where token is being created in
 	// the same second as it is checked -> < wouldn't fail
-	refreshableToken.Claims["exp"] = time.Now().Add(time.Hour).Unix() - 1
-	refreshableToken.Claims["orig_iat"] = time.Now().Unix() - 1
-	tokenString, _ = refreshableToken.SignedString(key)
+	tokenString, err := refreshableToken.SignedString(key)
+	if err != nil {
+		t.Errorf("Signing error: %v", err)
+	}
 
-	validRefreshReq := test.MakeSimpleRequest("GET", "http://localhost/", nil)
+	validRefreshReq := test.MakeSimpleRequest("GET", "http://localhost/TestRefreshSuccess", nil)
 	validRefreshReq.Header.Set("Authorization", "Bearer "+tokenString)
-	recorded = test.RunRequest(t, refreshApi.MakeHandler(), validRefreshReq)
+	recorded := test.RunRequest(t, refreshApi.MakeHandler(), validRefreshReq)
 	recorded.CodeIs(200)
 	recorded.ContentTypeIsJson()
 
 	rToken := DecoderToken{}
 	test.DecodeJsonPayload(recorded.Recorder, &rToken)
-	refreshToken, err := jwt.Parse(rToken.Token, func(token *jwt.Token) (interface{}, error) {
+	refreshToken, err := jwt.ParseWithClaims(rToken.Token, &RestClaims{}, func(token *jwt.Token) (interface{}, error) {
 		return key, nil
 	})
 
 	if err != nil {
-		t.Errorf("Received refreshed token with wrong signature", err)
+		t.Logf("Error token: %+v, %v", rToken, recorded.Recorder.Code)
+		t.Errorf("Received refreshed token with wrong signature: %v", err)
+		return
 	}
 
-	if refreshToken.Claims["id"].(string) != "admin" ||
-		int64(refreshToken.Claims["orig_iat"].(float64)) != refreshableToken.Claims["orig_iat"].(int64) ||
-		int64(refreshToken.Claims["exp"].(float64)) < refreshableToken.Claims["exp"].(int64) {
+	claimsRefresh := refreshToken.Claims.(*RestClaims)
+
+	if claimsRefresh.Subject != "admin" ||
+		claimsRefresh.OriginalIssuedAt != claimsRefreshable.OriginalIssuedAt ||
+		claimsRefresh.ExpiresAt < claimsRefreshable.ExpiresAt {
 		t.Errorf("Received refreshed token with wrong data")
 	}
 }
@@ -268,22 +315,23 @@ func TestAuthJWTPayload(t *testing.T) {
 
 	// correct payload
 	loginCreds := map[string]string{"username": "admin", "password": "admin"}
-	rightCredReq := test.MakeSimpleRequest("POST", "http://localhost/", loginCreds)
+	rightCredReq := test.MakeSimpleRequest("POST", "http://localhost/TestAuthJWTPayload", loginCreds)
 	recorded := test.RunRequest(t, loginApi.MakeHandler(), rightCredReq)
 	recorded.CodeIs(200)
 	recorded.ContentTypeIsJson()
 
 	nToken := DecoderToken{}
 	test.DecodeJsonPayload(recorded.Recorder, &nToken)
-	newToken, err := jwt.Parse(nToken.Token, func(token *jwt.Token) (interface{}, error) {
+	newToken, err := jwt.ParseWithClaims(nToken.Token, &RestClaims{}, func(token *jwt.Token) (interface{}, error) {
 		return key, nil
 	})
 
 	if err != nil {
-		t.Errorf("Received new token with wrong signature", err)
+		t.Error("Received new token with wrong signature", err)
 	}
 
-	if newToken.Claims["testkey"].(string) != "testval" || newToken.Claims["exp"].(float64) == 0 {
+	claims := newToken.Claims.(*RestClaims)
+	if claims.Payload["testkey"].(string) != "testval" || claims.ExpiresAt == 0 {
 		t.Errorf("Received new token without payload")
 	}
 
@@ -292,14 +340,15 @@ func TestAuthJWTPayload(t *testing.T) {
 	refreshApi.Use(authMiddleware)
 	refreshApi.SetApp(rest.AppSimple(authMiddleware.RefreshHandler))
 
-	refreshableToken := jwt.New(jwt.GetSigningMethod("HS256"))
-	refreshableToken.Claims["id"] = "admin"
-	refreshableToken.Claims["exp"] = time.Now().Add(time.Hour).Unix()
-	refreshableToken.Claims["orig_iat"] = time.Now().Unix()
-	refreshableToken.Claims["testkey"] = "testval"
-	tokenString, _ := refreshableToken.SignedString(key)
+	claimsRefreshable := makeClaims("admin")
+	claimsRefreshable.Payload["testkey"] = "testval"
+	refreshableToken := jwt.NewWithClaims(jwt.GetSigningMethod("HS256"), claimsRefreshable)
+	tokenString, err := refreshableToken.SignedString(key)
+	if err != nil {
+		t.Errorf("Could not sign token: %v", err)
+	}
 
-	validRefreshReq := test.MakeSimpleRequest("GET", "http://localhost/", nil)
+	validRefreshReq := test.MakeSimpleRequest("GET", "http://localhost/correct payload after refresh", nil)
 	validRefreshReq.Header.Set("Authorization", "Bearer "+tokenString)
 	recorded = test.RunRequest(t, refreshApi.MakeHandler(), validRefreshReq)
 	recorded.CodeIs(200)
@@ -307,15 +356,17 @@ func TestAuthJWTPayload(t *testing.T) {
 
 	rToken := DecoderToken{}
 	test.DecodeJsonPayload(recorded.Recorder, &rToken)
-	refreshToken, err := jwt.Parse(rToken.Token, func(token *jwt.Token) (interface{}, error) {
+	refreshToken, err := jwt.ParseWithClaims(rToken.Token, &RestClaims{}, func(token *jwt.Token) (interface{}, error) {
 		return key, nil
 	})
 
 	if err != nil {
-		t.Errorf("Received refreshed token with wrong signature", err)
+		t.Error("Received refreshed token with wrong signature", err)
 	}
 
-	if refreshToken.Claims["testkey"].(string) != "testval" {
+	claimsRefresh := refreshToken.Claims.(*RestClaims)
+
+	if claimsRefresh.Payload["testkey"].(string) != "testval" {
 		t.Errorf("Received new token without payload")
 	}
 
@@ -323,15 +374,13 @@ func TestAuthJWTPayload(t *testing.T) {
 	payloadApi := rest.NewApi()
 	payloadApi.Use(authMiddleware)
 	payloadApi.SetApp(rest.AppSimple(func(w rest.ResponseWriter, r *rest.Request) {
-		testval := r.Env["JWT_PAYLOAD"].(map[string]interface{})["testkey"].(string)
+		testval := r.Env["JWT_PAYLOAD"].(*RestClaims).Payload["testkey"].(string)
 		w.WriteJson(map[string]string{"testkey": testval})
 	}))
 
-	payloadToken := jwt.New(jwt.GetSigningMethod("HS256"))
-	payloadToken.Claims["id"] = "admin"
-	payloadToken.Claims["exp"] = time.Now().Add(time.Hour).Unix()
-	payloadToken.Claims["orig_iat"] = time.Now().Unix()
-	payloadToken.Claims["testkey"] = "testval"
+	claimsPayload := makeClaims("admin")
+	claimsPayload.Payload["testkey"] = "testval"
+	payloadToken := jwt.NewWithClaims(jwt.GetSigningMethod("HS256"), claimsPayload)
 	payloadTokenString, _ := payloadToken.SignedString(key)
 
 	payloadReq := test.MakeSimpleRequest("GET", "http://localhost/", nil)
@@ -368,7 +417,7 @@ func TestClaimsDuringAuthorization(t *testing.T) {
 			jwt_claims := ExtractClaims(request)
 
 			// Check the actual claim, set in PayloadFunc
-			return (jwt_claims["testkey"] == "testval")
+			return (jwt_claims.Payload["testkey"] == "testval")
 		},
 	}
 
