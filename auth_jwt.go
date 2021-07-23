@@ -128,8 +128,8 @@ func ExtractClaims(request *rest.Request) *RestClaims {
 }
 
 type loginResponse struct {
-	Token     string    `json:"token"`
-	ExpiresAt time.Time `json:"ExpiresAt"`
+	Token  string     `json:"token"`
+	Claims RestClaims `json:"claims"`
 }
 
 type login struct {
@@ -169,13 +169,12 @@ func (mw *JWTMiddleware) LoginHandler(writer rest.ResponseWriter, request *rest.
 
 	// Build the claims
 	now := time.Now()
-	expiresAt := now.Add(mw.Timeout).Truncate(time.Second)
 	claims := RestClaims{
 		StandardClaims: jwt.StandardClaims{
 			Subject:   loginVals.Username,
 			IssuedAt:  now.Unix(),
 			NotBefore: now.Unix(),
-			ExpiresAt: expiresAt.Unix(),
+			ExpiresAt: now.Add(mw.Timeout).Unix(),
 		},
 	}
 
@@ -200,8 +199,8 @@ func (mw *JWTMiddleware) LoginHandler(writer rest.ResponseWriter, request *rest.
 	}
 
 	writer.WriteJson(loginResponse{
-		Token:     tokenString,
-		ExpiresAt: expiresAt,
+		Token:  tokenString,
+		Claims: claims,
 	})
 }
 
