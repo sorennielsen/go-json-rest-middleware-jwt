@@ -124,12 +124,12 @@ func ExtractClaims(request *rest.Request) *RestClaims {
 	if request.Env["JWT_PAYLOAD"] == nil {
 		return nil
 	}
-	jwtClaims := request.Env["JWT_PAYLOAD"].(*RestClaims)
-	return jwtClaims
+	return request.Env["JWT_PAYLOAD"].(*RestClaims)
 }
 
-type resultToken struct {
-	Token string `json:"token"`
+type loginResponse struct {
+	Token     string    `json:"token"`
+	ExpiresAt time.Time `json:"ExpiresAt"`
 }
 
 type login struct {
@@ -169,12 +169,13 @@ func (mw *JWTMiddleware) LoginHandler(writer rest.ResponseWriter, request *rest.
 
 	// Build the claims
 	now := time.Now()
+	expiresAt := now.Add(mw.Timeout).Truncate(time.Second)
 	claims := RestClaims{
 		StandardClaims: jwt.StandardClaims{
 			Subject:   loginVals.Username,
 			IssuedAt:  now.Unix(),
 			NotBefore: now.Unix(),
-			ExpiresAt: now.Add(mw.Timeout).Unix(),
+			ExpiresAt: expiresAt.Unix(),
 		},
 	}
 
@@ -198,7 +199,10 @@ func (mw *JWTMiddleware) LoginHandler(writer rest.ResponseWriter, request *rest.
 		return
 	}
 
-	writer.WriteJson(resultToken{Token: tokenString})
+	writer.WriteJson(loginResponse{
+		Token:     tokenString,
+		ExpiresAt: expiresAt,
+	})
 }
 
 func (mw *JWTMiddleware) parseToken(request *rest.Request) (*jwt.Token, error) {
@@ -255,7 +259,7 @@ func (mw *JWTMiddleware) RefreshHandler(writer rest.ResponseWriter, request *res
 		mw.unauthorized(writer, "Unable to sign token")
 		return
 	}
-	writer.WriteJson(resultToken{Token: tokenString})
+	writer.WriteJson(loginResponse{Token: tokenString})
 }
 
 func (mw *JWTMiddleware) unauthorized(writer rest.ResponseWriter, debugReason string) {
