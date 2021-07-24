@@ -140,7 +140,8 @@ type login struct {
 type RestClaims struct {
 	jwt.StandardClaims
 	Payload          map[string]interface{} `json:"payload,omitempty"`
-	OriginalIssuedAt int64                  `json:"orig_iat"`
+	OriginalIssuedAt int64                  `json:"orig_iat,omitempty"`
+	RefreshUntil     int64                  `json:"refresh_until,omitempty"`
 }
 
 func (rc RestClaims) Valid() error {
@@ -186,7 +187,9 @@ func (mw *JWTMiddleware) LoginHandler(writer rest.ResponseWriter, request *rest.
 	}
 
 	if mw.MaxRefresh != 0 {
-		claims.OriginalIssuedAt = time.Now().Unix()
+		orgIssuedAt := time.Now()
+		claims.OriginalIssuedAt = orgIssuedAt.Unix()
+		claims.RefreshUntil = orgIssuedAt.Add(mw.MaxRefresh).Unix()
 	}
 
 	token := jwt.NewWithClaims(jwt.GetSigningMethod(mw.SigningAlgorithm), claims)
