@@ -261,7 +261,10 @@ func (mw *JWTMiddleware) RefreshHandler(writer rest.ResponseWriter, request *res
 		mw.unauthorized(writer, "Unable to sign token")
 		return
 	}
-	writer.WriteJson(loginResponse{Token: tokenString})
+	writer.WriteJson(loginResponse{
+		Token:  tokenString,
+		Claims: *claims,
+	})
 }
 
 func (mw *JWTMiddleware) unauthorized(writer rest.ResponseWriter, debugReason string) {
