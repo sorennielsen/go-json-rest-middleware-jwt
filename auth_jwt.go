@@ -253,7 +253,8 @@ func (mw *JWTMiddleware) RefreshHandler(writer rest.ResponseWriter, request *res
 		return
 	}
 
-	// Update expiration time but leave all else as-is
+	// Update a few fields but leave rest as-is
+	claims.IssuedAt = time.Now().Unix()
 	claims.ExpiresAt = time.Now().Add(mw.Timeout).Unix()
 	newToken := jwt.NewWithClaims(jwt.GetSigningMethod(mw.SigningAlgorithm), claims)
 	tokenString, err := newToken.SignedString(mw.Key)
