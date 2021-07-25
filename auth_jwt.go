@@ -255,7 +255,8 @@ func (mw *JWTMiddleware) RefreshHandler(writer rest.ResponseWriter, request *res
 
 	// Update a few fields but leave rest as-is
 	claims.IssuedAt = time.Now().Unix()
-	claims.ExpiresAt = time.Now().Add(mw.Timeout).Unix()
+	claims.ExpiresAt = earliestTime(time.Now().Add(mw.Timeout).Unix(), origIat+int64(mw.MaxRefresh.Seconds()))
+
 	newToken := jwt.NewWithClaims(jwt.GetSigningMethod(mw.SigningAlgorithm), claims)
 	tokenString, err := newToken.SignedString(mw.Key)
 	if err != nil {
@@ -274,4 +275,11 @@ func (mw *JWTMiddleware) unauthorized(writer rest.ResponseWriter, debugReason st
 		writer.Header().Set("X-Unauthorized-Reason", fmt.Sprintf(debugReason))
 	}
 	rest.Error(writer, "Not Authorized", http.StatusUnauthorized)
+}
+
+func earliestTime(a, b int64) int64 {
+	if a < b {
+		return a
+	}
+	return b
 }
