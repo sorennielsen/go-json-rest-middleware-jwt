@@ -139,9 +139,9 @@ type login struct {
 
 type RestClaims struct {
 	jwt.StandardClaims
-	Payload          map[string]interface{} `json:"payload,omitempty"`
 	OriginalIssuedAt int64                  `json:"orig_iat,omitempty"`
 	RefreshUntil     int64                  `json:"refresh_until,omitempty"`
+	Custom           map[string]interface{} `json:"custom,omitempty"`
 }
 
 func (rc RestClaims) Valid() error {
@@ -180,9 +180,9 @@ func (mw *JWTMiddleware) LoginHandler(writer rest.ResponseWriter, request *rest.
 	}
 
 	if mw.PayloadFunc != nil {
-		claims.Payload = make(map[string]interface{})
+		claims.Custom = make(map[string]interface{})
 		for key, value := range mw.PayloadFunc(loginVals.Username) {
-			claims.Payload[key] = value
+			claims.Custom[key] = value
 		}
 	}
 

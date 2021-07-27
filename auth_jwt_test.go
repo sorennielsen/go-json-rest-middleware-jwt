@@ -28,7 +28,7 @@ func makeClaims(username string) RestClaims {
 			ExpiresAt: now.Add(time.Hour).Unix(),
 		},
 		OriginalIssuedAt: now.Unix(),
-		Payload:          make(map[string]interface{}),
+		Custom:          make(map[string]interface{}),
 	}
 	return claims
 }
@@ -331,7 +331,7 @@ func TestAuthJWTPayload(t *testing.T) {
 	}
 
 	claims := newToken.Claims.(*RestClaims)
-	if claims.Payload["testkey"].(string) != "testval" || claims.ExpiresAt == 0 {
+	if claims.Custom["testkey"].(string) != "testval" || claims.ExpiresAt == 0 {
 		t.Errorf("Received new token without payload")
 	}
 
@@ -341,7 +341,7 @@ func TestAuthJWTPayload(t *testing.T) {
 	refreshApi.SetApp(rest.AppSimple(authMiddleware.RefreshHandler))
 
 	claimsRefreshable := makeClaims("admin")
-	claimsRefreshable.Payload["testkey"] = "testval"
+	claimsRefreshable.Custom["testkey"] = "testval"
 	refreshableToken := jwt.NewWithClaims(jwt.GetSigningMethod("HS256"), claimsRefreshable)
 	tokenString, err := refreshableToken.SignedString(key)
 	if err != nil {
@@ -366,7 +366,7 @@ func TestAuthJWTPayload(t *testing.T) {
 
 	claimsRefresh := refreshToken.Claims.(*RestClaims)
 
-	if claimsRefresh.Payload["testkey"].(string) != "testval" {
+	if claimsRefresh.Custom["testkey"].(string) != "testval" {
 		t.Errorf("Received new token without payload")
 	}
 
@@ -374,12 +374,12 @@ func TestAuthJWTPayload(t *testing.T) {
 	payloadApi := rest.NewApi()
 	payloadApi.Use(authMiddleware)
 	payloadApi.SetApp(rest.AppSimple(func(w rest.ResponseWriter, r *rest.Request) {
-		testval := r.Env["JWT_PAYLOAD"].(*RestClaims).Payload["testkey"].(string)
+		testval := r.Env["JWT_PAYLOAD"].(*RestClaims).Custom["testkey"].(string)
 		w.WriteJson(map[string]string{"testkey": testval})
 	}))
 
 	claimsPayload := makeClaims("admin")
-	claimsPayload.Payload["testkey"] = "testval"
+	claimsPayload.Custom["testkey"] = "testval"
 	payloadToken := jwt.NewWithClaims(jwt.GetSigningMethod("HS256"), claimsPayload)
 	payloadTokenString, _ := payloadToken.SignedString(key)
 
@@ -417,7 +417,7 @@ func TestClaimsDuringAuthorization(t *testing.T) {
 			jwt_claims := ExtractClaims(request)
 
 			// Check the actual claim, set in PayloadFunc
-			return (jwt_claims.Payload["testkey"] == "testval")
+			return (jwt_claims.Custom["testkey"] == "testval")
 		},
 	}
 
