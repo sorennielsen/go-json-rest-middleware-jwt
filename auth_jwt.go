@@ -7,6 +7,7 @@ import (
 	"github.com/ant0ine/go-json-rest/rest"
 	"github.com/golang-jwt/jwt"
 
+	"context"
 	"errors"
 	"log"
 	"net/http"
@@ -41,12 +42,12 @@ type JWTMiddleware struct {
 
 	// Callback function that should perform the authentication of the user based on userId and
 	// password. Returns the Subject to set in claims on success and must return true on success, false on failure. Required.
-	Authenticator func(userId string, password string) (string, bool)
+	Authenticator func(ctx context.Context, userId string, password string) (string, bool)
 
 	// Callback function that should perform the authorization of the authenticated user. Called
 	// only after an authentication success. Must return true on success, false on failure.
 	// Optional, default to success.
-	Authorizator func(userId string, request *rest.Request) bool
+	Authorizator func(ctx context.Context, userId string, request *rest.Request) bool
 
 	// Callback function that will be called during login.
 	// Using this function it is possible to add additional payload data to the webtoken.
@@ -54,7 +55,7 @@ type JWTMiddleware struct {
 	// Note that the payload is not encrypted.
 	// The attributes mentioned on jwt.io can't be used as keys for the map.
 	// Optional, by default no additional data will be set.
-	PayloadFunc func(userId string) map[string]interface{}
+	PayloadFunc func(ctx context.Context, userId string) map[string]interface{}
 
 	// Debug adds a bit of debug when the middleware rejects request with unauthorized
 	// Only use while developing as it leaks details that can potentially be abused by an attacker
@@ -80,7 +81,7 @@ func (mw *JWTMiddleware) MiddlewareFunc(handler rest.HandlerFunc) rest.HandlerFu
 		log.Fatal("Authenticator is required")
 	}
 	if mw.Authorizator == nil {
-		mw.Authorizator = func(userId string, request *rest.Request) bool {
+		mw.Authorizator = func(ctx context.Context, userId string, request *rest.Request) bool {
 			return true
 		}
 	}
@@ -110,8 +111,9 @@ func (mw *JWTMiddleware) middlewareImpl(writer rest.ResponseWriter, request *res
 
 	request.Env["REMOTE_USER"] = subject
 	request.Env["JWT_PAYLOAD"] = claims
+	ctx := request.Context()
 
-	if !mw.Authorizator(subject, request) {
+	if !mw.Authorizator(ctx, subject, request) {
 		mw.unauthorized(writer, "Authorizer rejected request")
 		return
 	}
@@ -163,7 +165,8 @@ func (mw *JWTMiddleware) LoginHandler(writer rest.ResponseWriter, request *rest.
 		return
 	}
 
-	subject, success := mw.Authenticator(loginVals.Username, loginVals.Password)
+	ctx := request.Context()
+	subject, success := mw.Authenticator(ctx, loginVals.Username, loginVals.Password)
 	if !success {
 		mw.unauthorized(writer, "Authentication failed")
 		return
@@ -182,7 +185,7 @@ func (mw *JWTMiddleware) LoginHandler(writer rest.ResponseWriter, request *rest.
 
 	if mw.PayloadFunc != nil {
 		claims.Custom = make(map[string]interface{})
-		for key, value := range mw.PayloadFunc(loginVals.Username) {
+		for key, value := range mw.PayloadFunc(ctx, loginVals.Username) {
 			claims.Custom[key] = value
 		}
 	}
