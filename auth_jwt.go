@@ -40,8 +40,8 @@ type JWTMiddleware struct {
 	MaxRefresh time.Duration
 
 	// Callback function that should perform the authentication of the user based on userId and
-	// password. Must return true on success, false on failure. Required.
-	Authenticator func(userId string, password string) bool
+	// password. Returns the Subject to set in claims on success and must return true on success, false on failure. Required.
+	Authenticator func(userId string, password string) (string, bool)
 
 	// Callback function that should perform the authorization of the authenticated user. Called
 	// only after an authentication success. Must return true on success, false on failure.
@@ -163,7 +163,8 @@ func (mw *JWTMiddleware) LoginHandler(writer rest.ResponseWriter, request *rest.
 		return
 	}
 
-	if !mw.Authenticator(loginVals.Username, loginVals.Password) {
+	subject, success := mw.Authenticator(loginVals.Username, loginVals.Password)
+	if !success {
 		mw.unauthorized(writer, "Authentication failed")
 		return
 	}
@@ -172,7 +173,7 @@ func (mw *JWTMiddleware) LoginHandler(writer rest.ResponseWriter, request *rest.
 	now := time.Now()
 	claims := RestClaims{
 		StandardClaims: jwt.StandardClaims{
-			Subject:   loginVals.Username,
+			Subject:   subject,
 			IssuedAt:  now.Unix(),
 			NotBefore: now.Unix(),
 			ExpiresAt: now.Add(mw.Timeout).Unix(),
