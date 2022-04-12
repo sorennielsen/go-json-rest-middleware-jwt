@@ -1,6 +1,7 @@
 package jwt
 
 import (
+	"context"
 	"log"
 	"testing"
 	"time"
@@ -28,7 +29,7 @@ func makeClaims(username string) RestClaims {
 			ExpiresAt: now.Add(time.Hour).Unix(),
 		},
 		OriginalIssuedAt: now.Unix(),
-		Custom:          make(map[string]interface{}),
+		Custom:           make(map[string]interface{}),
 	}
 	return claims
 }
@@ -52,13 +53,13 @@ func makeAthMiddleware() *JWTMiddleware {
 		Key:        key,
 		Timeout:    time.Hour,
 		MaxRefresh: time.Hour * 24,
-		Authenticator: func(userId string, password string) bool {
+		Authenticator: func(ctx context.Context, userId string, password string) (string, bool) {
 			if userId == "admin" && password == "admin" {
-				return true
+				return "admin", true
 			}
-			return false
+			return "", false
 		},
-		Authorizator: func(userId string, request *rest.Request) bool {
+		Authorizator: func(ctx context.Context, userId string, request *rest.Request) bool {
 			if request.Method == "GET" {
 				return true
 			}
@@ -297,13 +298,13 @@ func TestAuthJWTPayload(t *testing.T) {
 		Key:              key,
 		Timeout:          time.Hour,
 		MaxRefresh:       time.Hour * 24,
-		Authenticator: func(userId string, password string) bool {
+		Authenticator: func(ctx context.Context, userId string, password string) (string, bool) {
 			if userId == "admin" && password == "admin" {
-				return true
+				return "admin", true
 			}
-			return false
+			return "", false
 		},
-		PayloadFunc: func(userId string) map[string]interface{} {
+		PayloadFunc: func(ctx context.Context, userId string) map[string]interface{} {
 			// tests normal value
 			// tests overwriting of reserved jwt values should have no effect
 			return map[string]interface{}{"testkey": "testval", "exp": 0}
@@ -405,15 +406,15 @@ func TestClaimsDuringAuthorization(t *testing.T) {
 		Key:              key,
 		Timeout:          time.Hour,
 		MaxRefresh:       time.Hour * 24,
-		PayloadFunc: func(userId string) map[string]interface{} {
+		PayloadFunc: func(ctx context.Context, userId string) map[string]interface{} {
 			// Set custom claim, to be checked in Authorizator method
 			return map[string]interface{}{"testkey": "testval", "exp": 0}
 		},
-		Authenticator: func(userId string, password string) bool {
+		Authenticator: func(ctx context.Context, userId string, password string) (string, bool) {
 			// Not testing authentication, just authorization, so always return true
-			return true
+			return userId, true
 		},
-		Authorizator: func(userId string, request *rest.Request) bool {
+		Authorizator: func(ctx context.Context, userId string, request *rest.Request) bool {
 			jwt_claims := ExtractClaims(request)
 
 			// Check the actual claim, set in PayloadFunc

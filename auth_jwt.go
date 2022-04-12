@@ -24,6 +24,21 @@ type JWTMiddleware struct {
 	// Realm name to display to the user. Required.
 	Realm string
 
+	// CookieName used for Set-Cookie (optional, default "jwt")
+	CookieName string
+
+	// CookieDomain used for Set-Cookie (optional)
+	// If omitted/empty, this attribute defaults to the host of the current document URL, not including subdomains.
+	CookieDomain string
+
+	// CookieSecure used for Set-Cookie
+	// Indicates that the cookie is sent to the server only when a request is made with the https: scheme (except on localhost), and therefore, is more resistant to man-in-the-middle attacks.
+	CookieSecure bool
+
+	// CookiePath used for Set-Cookie (optional, default "/")
+	// Indicates the path that must exist in the requested URL for the browser to send the Cookie header.
+	CookiePath string
+
 	// signing algorithm - possible values are HS256, HS384, HS512
 	// Optional, default is HS256.
 	SigningAlgorithm string
@@ -174,12 +189,13 @@ func (mw *JWTMiddleware) LoginHandler(writer rest.ResponseWriter, request *rest.
 
 	// Build the claims
 	now := time.Now()
+	expiresAt := now.Add(mw.Timeout)
 	claims := RestClaims{
 		StandardClaims: jwt.StandardClaims{
 			Subject:   subject,
 			IssuedAt:  now.Unix(),
 			NotBefore: now.Unix(),
-			ExpiresAt: now.Add(mw.Timeout).Unix(),
+			ExpiresAt: expiresAt.Unix(),
 		},
 	}
 
@@ -204,7 +220,20 @@ func (mw *JWTMiddleware) LoginHandler(writer rest.ResponseWriter, request *rest.
 		mw.unauthorized(writer, fmt.Sprintf("Could not sign: %v", err))
 		return
 	}
-
+	cookieName := "jwt"
+	if mw.CookieName != "" {
+		cookieName = mw.CookieName
+	}
+	cookie := http.Cookie{
+		Name:     cookieName,
+		Value:    tokenString,
+		Path:     mw.CookiePath,
+		Domain:   mw.CookieDomain,
+		Expires:  expiresAt,
+		Secure:   mw.CookieSecure,
+		HttpOnly: true,
+	}
+	http.SetCookie(writer.(http.ResponseWriter), &cookie)
 	writer.WriteJson(loginResponse{
 		Token:  tokenString,
 		Claims: claims,
