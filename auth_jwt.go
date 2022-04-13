@@ -259,7 +259,19 @@ func (mw *JWTMiddleware) LogoutHandler(writer rest.ResponseWriter, request *rest
 		Secure:   mw.CookieSecure,
 		HttpOnly: true,
 	}
-	http.SetCookie(writer.(http.ResponseWriter), &cookie)
+	w := writer.(http.ResponseWriter)
+	r := request.Request
+	http.SetCookie(w, &cookie)
+	err := request.ParseForm()
+	if err != nil {
+		log.Printf("Error parsing form. %v", err)
+		return
+	}
+	returnTo := request.Form.Get("returnTo")
+	log.Printf("Logging out and returning to %q", returnTo)
+	if returnTo != "" {
+		http.Redirect(w, r, returnTo, http.StatusSeeOther)
+	}
 }
 
 // parseToken reads and parses token from request
