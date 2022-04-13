@@ -258,6 +258,10 @@ func (mw *JWTMiddleware) LogoutHandler(writer rest.ResponseWriter, request *rest
 		Expires:  time.Unix(0, 0),
 		Secure:   mw.CookieSecure,
 		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	}
+	if mw.CookieSecure {
+		cookie.SameSite = http.SameSiteStrictMode
 	}
 	w := writer.(http.ResponseWriter)
 	r := request.Request
@@ -268,7 +272,6 @@ func (mw *JWTMiddleware) LogoutHandler(writer rest.ResponseWriter, request *rest
 		return
 	}
 	returnTo := request.Form.Get("returnTo")
-	log.Printf("Logging out and returning to %q", returnTo)
 	if returnTo != "" {
 		http.Redirect(w, r, returnTo, http.StatusSeeOther)
 	}
@@ -284,7 +287,6 @@ func (mw *JWTMiddleware) parseToken(request *rest.Request) (*jwt.Token, error) {
 	}
 	cookie, err := request.Cookie(cookieName)
 	if err == nil {
-		log.Printf("Read JWT cookie %q: %#v", cookieName, cookie)
 		token = cookie.Value
 	} else {
 		authHeader := request.Header.Get("Authorization")
