@@ -72,6 +72,10 @@ type JWTMiddleware struct {
 	// Optional, by default no additional data will be set.
 	PayloadFunc func(ctx context.Context, userId string) map[string]interface{}
 
+	// IncludeTokenInResponse determines if the JWT are added to the JSON response (it is always set as a cookie)
+	// Best practice for web apps are to keep this false and use httpOnly cookies and let the browser send the JWT cookie as applicable.
+	IncludeTokenInResponse bool
+
 	// Debug adds a bit of debug when the middleware rejects request with unauthorized
 	// Only use while developing as it leaks details that can potentially be abused by an attacker
 	Debug bool
@@ -79,7 +83,6 @@ type JWTMiddleware struct {
 
 // MiddlewareFunc makes JWTMiddleware implement the Middleware interface.
 func (mw *JWTMiddleware) MiddlewareFunc(handler rest.HandlerFunc) rest.HandlerFunc {
-
 	if mw.Realm == "" {
 		log.Fatal("Realm is required")
 	}
@@ -100,7 +103,6 @@ func (mw *JWTMiddleware) MiddlewareFunc(handler rest.HandlerFunc) rest.HandlerFu
 			return true
 		}
 	}
-
 	return func(writer rest.ResponseWriter, request *rest.Request) { mw.middlewareImpl(writer, request, handler) }
 }
 
@@ -145,8 +147,8 @@ func ExtractClaims(request *rest.Request) *RestClaims {
 }
 
 type loginResponse struct {
-	Token  string     `json:"token"`
 	Claims RestClaims `json:"claims"`
+	Token  string     `json:"token,omitempty"`
 }
 
 type login struct {
@@ -213,11 +215,9 @@ func (mw *JWTMiddleware) LoginHandler(writer rest.ResponseWriter, request *rest.
 	}
 
 	token := jwt.NewWithClaims(jwt.GetSigningMethod(mw.SigningAlgorithm), claims)
-
 	tokenString, err := token.SignedString(mw.Key)
-
 	if err != nil {
-		mw.unauthorized(writer, fmt.Sprintf("Could not sign: %v", err))
+		mw.unauthorized(writer, fmt.Sprintf("Unable to sign JWT: %v", err))
 		return
 	}
 	cookieName := "jwt"
@@ -233,27 +233,61 @@ func (mw *JWTMiddleware) LoginHandler(writer rest.ResponseWriter, request *rest.
 		Secure:   mw.CookieSecure,
 		HttpOnly: true,
 	}
+	if !mw.IncludeTokenInResponse {
+		tokenString = ""
+	}
 	http.SetCookie(writer.(http.ResponseWriter), &cookie)
 	writer.WriteJson(loginResponse{
-		Token:  tokenString,
 		Claims: claims,
+		Token:  tokenString,
 	})
 }
 
-func (mw *JWTMiddleware) parseToken(request *rest.Request) (*jwt.Token, error) {
-	authHeader := request.Header.Get("Authorization")
-
-	if authHeader == "" {
-		return nil, errors.New("Auth header empty")
+// LogoutHandler can be used by clients to logout
+// It will simply unset the cookie with the JWT.
+func (mw *JWTMiddleware) LogoutHandler(writer rest.ResponseWriter, request *rest.Request) {
+	cookieName := "jwt"
+	if mw.CookieName != "" {
+		cookieName = mw.CookieName
 	}
+	cookie := http.Cookie{
+		Name:     cookieName,
+		Value:    "", // empty string means "delete"
+		Path:     mw.CookiePath,
+		Domain:   mw.CookieDomain,
+		Expires:  time.Unix(0, 0),
+		Secure:   mw.CookieSecure,
+		HttpOnly: true,
+	}
+	http.SetCookie(writer.(http.ResponseWriter), &cookie)
+}
 
-	parts := strings.SplitN(authHeader, " ", 2)
-	if !(len(parts) == 2 && parts[0] == "Bearer") {
-		return nil, errors.New("Invalid auth header")
+// parseToken reads and parses token from request
+// If token is set via cookie it takes precedent over Authorization header.
+func (mw *JWTMiddleware) parseToken(request *rest.Request) (*jwt.Token, error) {
+	var token string
+	cookieName := "jwt"
+	if mw.CookieName != "" {
+		cookieName = mw.CookieName
+	}
+	cookie, err := request.Cookie(cookieName)
+	if err == nil {
+		log.Printf("Read JWT cookie %q: %#v", cookieName, cookie)
+		token = cookie.Value
+	} else {
+		authHeader := request.Header.Get("Authorization")
+		if authHeader == "" {
+			return nil, errors.New("Auth header empty")
+		}
+		parts := strings.SplitN(authHeader, " ", 2)
+		if !(len(parts) == 2 && parts[0] == "Bearer") {
+			return nil, errors.New("Invalid auth header")
+		}
+		token = parts[1]
 	}
 
 	return jwt.ParseWithClaims(
-		parts[1],
+		token,
 		&RestClaims{},
 		func(token *jwt.Token) (interface{}, error) {
 			if jwt.GetSigningMethod(mw.SigningAlgorithm) != token.Method {
@@ -280,15 +314,17 @@ func (mw *JWTMiddleware) RefreshHandler(writer rest.ResponseWriter, request *res
 		mw.unauthorized(writer, fmt.Sprintf("Claims of unexpected type: %T", token.Claims))
 		return
 	}
+	now := time.Now()
+	expiresAt := now.Add(mw.Timeout)
 	origIat := claims.OriginalIssuedAt
-	if origIat < time.Now().Add(-mw.MaxRefresh).Unix() {
+	if origIat < now.Add(-mw.MaxRefresh).Unix() {
 		mw.unauthorized(writer, "Max refresh exceeded")
 		return
 	}
 
 	// Update a few fields but leave rest as-is
-	claims.IssuedAt = time.Now().Unix()
-	claims.ExpiresAt = earliestTime(time.Now().Add(mw.Timeout).Unix(), origIat+int64(mw.MaxRefresh.Seconds()))
+	claims.IssuedAt = now.Unix()
+	claims.ExpiresAt = earliestTime(now.Add(mw.Timeout).Unix(), origIat+int64(mw.MaxRefresh.Seconds()))
 
 	newToken := jwt.NewWithClaims(jwt.GetSigningMethod(mw.SigningAlgorithm), claims)
 	tokenString, err := newToken.SignedString(mw.Key)
@@ -296,9 +332,26 @@ func (mw *JWTMiddleware) RefreshHandler(writer rest.ResponseWriter, request *res
 		mw.unauthorized(writer, "Unable to sign token")
 		return
 	}
+	cookieName := "jwt"
+	if mw.CookieName != "" {
+		cookieName = mw.CookieName
+	}
+	cookie := http.Cookie{
+		Name:     cookieName,
+		Value:    tokenString,
+		Path:     mw.CookiePath,
+		Domain:   mw.CookieDomain,
+		Expires:  expiresAt,
+		Secure:   mw.CookieSecure,
+		HttpOnly: true,
+	}
+	if !mw.IncludeTokenInResponse {
+		tokenString = ""
+	}
+	http.SetCookie(writer.(http.ResponseWriter), &cookie)
 	writer.WriteJson(loginResponse{
-		Token:  tokenString,
 		Claims: *claims,
+		Token:  tokenString,
 	})
 }
 

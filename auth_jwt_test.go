@@ -65,6 +65,7 @@ func makeAthMiddleware() *JWTMiddleware {
 			}
 			return false
 		},
+		IncludeTokenInResponse: true,
 	}
 }
 
@@ -309,6 +310,7 @@ func TestAuthJWTPayload(t *testing.T) {
 			// tests overwriting of reserved jwt values should have no effect
 			return map[string]interface{}{"testkey": "testval", "exp": 0}
 		},
+		IncludeTokenInResponse: true,
 	}
 
 	loginApi := rest.NewApi()
@@ -420,6 +422,7 @@ func TestClaimsDuringAuthorization(t *testing.T) {
 			// Check the actual claim, set in PayloadFunc
 			return (jwt_claims.Custom["testkey"] == "testval")
 		},
+		IncludeTokenInResponse: true,
 	}
 
 	// Simple endpoint
