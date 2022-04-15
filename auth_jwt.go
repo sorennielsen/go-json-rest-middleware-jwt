@@ -243,6 +243,23 @@ func (mw *JWTMiddleware) LoginHandler(writer rest.ResponseWriter, request *rest.
 	})
 }
 
+// ClaimsHandler can be used by clients to get their claims based on their token
+func (mw *JWTMiddleware) ClaimsHandler(writer rest.ResponseWriter, request *rest.Request) {
+	token, err := mw.parseToken(request)
+	if err != nil {
+		mw.unauthorized(writer, "JWT not valid, no claims to return")
+		return
+	}
+	claims, ok := token.Claims.(*RestClaims)
+	if !ok {
+		mw.unauthorized(writer, fmt.Sprintf("Claims of unexpected type: %T", token.Claims))
+		return
+	}
+	writer.WriteJson(loginResponse{
+		Claims: *claims,
+	})
+}
+
 // LogoutHandler can be used by clients to logout
 // It will simply unset the cookie with the JWT.
 func (mw *JWTMiddleware) LogoutHandler(writer rest.ResponseWriter, request *rest.Request) {
@@ -275,40 +292,6 @@ func (mw *JWTMiddleware) LogoutHandler(writer rest.ResponseWriter, request *rest
 	if returnTo != "" {
 		http.Redirect(w, r, returnTo, http.StatusSeeOther)
 	}
-}
-
-// parseToken reads and parses token from request
-// If token is set via cookie it takes precedent over Authorization header.
-func (mw *JWTMiddleware) parseToken(request *rest.Request) (*jwt.Token, error) {
-	var token string
-	cookieName := "jwt"
-	if mw.CookieName != "" {
-		cookieName = mw.CookieName
-	}
-	cookie, err := request.Cookie(cookieName)
-	if err == nil {
-		token = cookie.Value
-	} else {
-		authHeader := request.Header.Get("Authorization")
-		if authHeader == "" {
-			return nil, errors.New("Auth header empty")
-		}
-		parts := strings.SplitN(authHeader, " ", 2)
-		if !(len(parts) == 2 && parts[0] == "Bearer") {
-			return nil, errors.New("Invalid auth header")
-		}
-		token = parts[1]
-	}
-
-	return jwt.ParseWithClaims(
-		token,
-		&RestClaims{},
-		func(token *jwt.Token) (interface{}, error) {
-			if jwt.GetSigningMethod(mw.SigningAlgorithm) != token.Method {
-				return nil, errors.New("Invalid signing algorithm")
-			}
-			return mw.Key, nil
-		})
 }
 
 // RefreshHandler can be used to refresh a token. The token still needs to be valid on refresh.
@@ -369,6 +352,40 @@ func (mw *JWTMiddleware) RefreshHandler(writer rest.ResponseWriter, request *res
 	})
 }
 
+// parseToken reads and parses token from request
+// If token is set via cookie it takes precedent over Authorization header.
+func (mw *JWTMiddleware) parseToken(request *rest.Request) (*jwt.Token, error) {
+	var token string
+	cookieName := "jwt"
+	if mw.CookieName != "" {
+		cookieName = mw.CookieName
+	}
+	cookie, err := request.Cookie(cookieName)
+	if err == nil {
+		token = cookie.Value
+	} else {
+		authHeader := request.Header.Get("Authorization")
+		if authHeader == "" {
+			return nil, errors.New("Auth header empty")
+		}
+		parts := strings.SplitN(authHeader, " ", 2)
+		if !(len(parts) == 2 && parts[0] == "Bearer") {
+			return nil, errors.New("Invalid auth header")
+		}
+		token = parts[1]
+	}
+
+	return jwt.ParseWithClaims(
+		token,
+		&RestClaims{},
+		func(token *jwt.Token) (interface{}, error) {
+			if jwt.GetSigningMethod(mw.SigningAlgorithm) != token.Method {
+				return nil, errors.New("Invalid signing algorithm")
+			}
+			return mw.Key, nil
+		})
+}
+
 func (mw *JWTMiddleware) unauthorized(writer rest.ResponseWriter, debugReason string) {
 	writer.Header().Set("WWW-Authenticate", "JWT realm="+mw.Realm)
 	if mw.Debug {
@@ -377,6 +394,8 @@ func (mw *JWTMiddleware) unauthorized(writer rest.ResponseWriter, debugReason st
 	rest.Error(writer, "Not Authorized", http.StatusUnauthorized)
 }
 
+// earliestTime returns the lowest of a and b
+// Basically just a math.Min(a, b) with a friendlly name
 func earliestTime(a, b int64) int64 {
 	if a < b {
 		return a
